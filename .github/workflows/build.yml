@@ -1,0 +1,38 @@
+name: Build Magick.Native for DropWheel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['build.ps1', '.github/workflows/build.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # As Magick.Native's own workflow: Visual Studio 2026.
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        id: build
+        shell: pwsh
+        run: ./build.ps1 -Output out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: magick-native-win64
+          path: |
+            out/*.zip
+            out/*-source.tar.gz
+          if-no-files-found: error
+      - name: Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.build.outputs.package }}-${GITHUB_SHA::7}"
+          cd out
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file ../README.md *.zip *-source.tar.gz || \
+            gh release upload "$TAG" *.zip *-source.tar.gz --clobber
