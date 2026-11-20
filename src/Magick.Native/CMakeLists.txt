@@ -78,12 +78,18 @@ endif()
 set(LIBAOM libaom.a)
 set(LIBBZIP2 libbz2.a)
 set(LIBGLIB libgio-2.0.a libgobject-2.0.a libgmodule-2.0.a libffi.a libglib-2.0.a)
-set(LIBHEIF libheif.a ${LIBAOM} libde265.a)
+# HEIF/HEVC support removed for Microsoft Store compliance (patented codecs)
+# Use Windows WIC for HEIC instead
+# set(LIBHEIF libheif.a ${LIBAOM} libde265.a)
+set(LIBHEIF)
 set(LIBJPEG libturbojpeg.a)
 set(LIBJPEGXL libjxl.a libjxl_threads.a libjxl_cms.a libbrotlienc.a libbrotlidec.a libbrotlicommon.a libhwy.a)
 set(LIBLCMS liblcms2.a)
 set(LIBLQR liblqr-1.a)
-set(LIBOPENH264 libopenh264.a)
+# OpenH264 support removed for Microsoft Store compliance (patented H.264 codec)
+# Use Windows Media Foundation for H.264 instead
+# set(LIBOPENH264 libopenh264.a)
+set(LIBOPENH264)
 set(LIBOPENJPEG libopenjp2.a)
 set(LIBOPENJPH libopenjph.a)
 set(LIBPNG libpng.a)
@@ -129,7 +135,7 @@ target_link_libraries(
     ${LIBFRIBIDI}
     ${LIBFREETYPE}
 
-    ${LIBHEIF}
+    # ${LIBHEIF} - removed for Microsoft Store compliance
     ${LIBJPEGXL}
     ${LIBEXR}
     ${LIBOPENJPH}
@@ -154,7 +160,7 @@ target_link_libraries(
 
     ${LIBICONV}
 
-    ${LIBOPENH264}
+    # ${LIBOPENH264} - removed for Microsoft Store compliance
 
     ${LIBSOCKFS}
     ${LIBRESOLV}

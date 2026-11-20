@@ -1,0 +1,126 @@
+name: Build Windows x64 Q8 (DropWheel Custom)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'build/windows/**'
+      - '.github/workflows/build-windows.yml'
+      - 'clone-dependencies-custom.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64-q8:
+    name: Windows x64 Q8 (no HEIF, no HEVC, no H.264)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Update ImageMagick.commit to latest commit
+        run: ./update.imagemagick.cmd
+        working-directory: src/ImageMagick
+
+      - name: Clone ImageMagick libraries (development mode with custom dependencies)
+        shell: cmd
+        run: |
+          call "..\..\tools\windows\find-bash.cmd"
+          %BASH% --login -i -c "./checkout.sh --development"
+        working-directory: src/ImageMagick
+
+      - name: Patch clone-dependencies.sh to exclude patented codecs
+        shell: cmd
+        run: |
+          copy /Y ..\..\..\clone-dependencies-custom.sh Dependencies\clone-dependencies.sh
+        working-directory: src/ImageMagick
+
+      - name: Build custom dependencies (excluding de265, heif, openh264)
+        shell: cmd
+        run: |
+          call "..\..\tools\windows\find-bash.cmd"
+          cd Dependencies
+          %BASH% --login -i -c "./clone-dependencies.sh windows"
+        working-directory: src/ImageMagick
+
+      - name: Build dependencies
+        shell: cmd
+        run: |
+          cd Dependencies
+          call build-dependencies.cmd windows x64 static
+        working-directory: src/ImageMagick
+
+      - name: Configure ImageMagick (without HEIF/H.264 delegates)
+        shell: cmd
+        run: |
+          cd Configure
+          Configure.Release.x64.exe /noWizard /VS2026 /static /Q8 /opencl /noDpc /noHdri /noOpenMP /x64 /linkRuntime
+        working-directory: src/ImageMagick
+
+      - name: Build ImageMagick static libraries
+        shell: cmd
+        run: |
+          msbuild IM7.Static.x64.sln /verbosity:minimal /m /t:Rebuild /p:Configuration=Release,Platform=x64
+        working-directory: src/ImageMagick
+
+      - name: Generate Directory.Build.targets for Magick.Native
+        shell: cmd
+        run: |
+          echo ^<Project^>^<ItemDefinitionGroup Condition="'$(MSBuildProjectName)' == 'CORE_MagickCore'"^>^<ClCompile^>^<PreprocessorDefinitions^>%%(PreprocessorDefinitions);MAGICKCORE_LIBRARY_NAME="Magick.Native-Q8-x64.dll"^</PreprocessorDefinitions^>^</ClCompile^>^</ItemDefinitionGroup^>^</Project^> > Directory.Build.targets
+        working-directory: src
+
+      - name: Build Magick.Native
+        shell: cmd
+        run: |
+          msbuild Magick.Native.sln /verbosity:minimal /m /t:Rebuild /p:Configuration=ReleaseQ8,Platform=x64
+        working-directory: src
+
+      - name: Copy artifacts
+        shell: cmd
+        run: |
+          mkdir artifacts
+          copy src\Magick.Native\bin\ReleaseQ8\x64\Magick.Native-Q8-x64.dll artifacts\
+          copy src\Magick.Native\bin\ReleaseQ8\x64\Magick.Native-Q8-x64.pdb artifacts\
+        working-directory: .
+
+      - name: Verify build - check for excluded libraries
+        shell: pwsh
+        run: |
+          $dll = "artifacts\Magick.Native-Q8-x64.dll"
+          $bytes = [System.IO.File]::ReadAllBytes($dll)
+          $content = [System.Text.Encoding]::Latin1.GetString($bytes)
+          $found = @()
+          foreach ($lib in "libheif", "libde265", "openh264") {
+            if ($content -match $lib) {
+              $found += $lib
+            }
+          }
+          if ($found.Count -gt 0) {
+            Write-Error "FAIL: Found excluded libraries in DLL: $($found -join ', ')"
+            exit 1
+          } else {
+            Write-Host "PASS: No excluded libraries found in DLL"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dropwheel-magick-windows-x64-q8
+          path: artifacts/
+          retention-days: 30
+
+      - name: Create release on tag
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
