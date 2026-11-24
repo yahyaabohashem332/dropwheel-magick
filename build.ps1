@@ -150,9 +150,22 @@ if (-not $dll) { throw 'Magick.Native-Q8-x64.dll was not built' }
 # No HEVC or H.264 codec in it (the names and API symbols DropWheel's build.ps1 also looks for), and no FFTW,
 # an optional dependency under the GPL that must never be linked in.
 $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($dll.FullName))
+# libheif's message for a picture it has no decoder for names "libde265" and "openh264", each a string of its own,
+# as decoders to install (codecs/decoder.cc, missing_decoder_error_message): those two words are text, not code.
+# Any other place these names, or the codecs' own names and symbols, are found stops the build.
+$scanned = $text.Replace("`0libde265`0", "`0`0").Replace("`0openh264`0", "`0`0")
+$held = @()
 foreach ($mark in @('libde265', 'de265_', 'openh264', 'WelsCreate', 'x265_', 'kvazaar', 'kvz_', 'fftw')) {
-    if ($text.IndexOf($mark, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "The DLL still holds $mark" }
+    $at = $scanned.IndexOf($mark, [StringComparison]::OrdinalIgnoreCase)
+    while ($at -ge 0) {
+        $from = [Math]::Max(0, $at - 40)
+        $around = ($scanned.Substring($from, [Math]::Min(100, $scanned.Length - $from)) -replace '[^\x20-\x7E]', '.')
+        Write-Host "$mark at $at`: $around"
+        $held += $mark
+        $at = $scanned.IndexOf($mark, $at + 1, [StringComparison]::OrdinalIgnoreCase)
+    }
 }
+if ($held) { throw "The DLL still holds $(($held | Select-Object -Unique) -join ', ')" }
 Copy-Item $dll.FullName $package
 Copy-Item $config (Join-Path $package 'heif-Config.txt')
 @(
