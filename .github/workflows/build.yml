@@ -26,13 +26,15 @@ jobs:
           path: |
             out/*.zip
             out/*-source.tar.gz
+            out/SHA256SUMS.txt
           if-no-files-found: error
       - name: Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+        # A release of its own for every build, never added to an older one: DropWheel pins each by its checksums.
+        # (v1.0.0-dropwheel-magick holds the DLL DropWheel 1.23.1 shipped, built on a PC before this workflow ran.)
         run: |
-          TAG="v1.0.0-dropwheel-magick"
+          TAG="v15.0.0-dropwheel.${GITHUB_RUN_NUMBER}"
           cd out
-          gh release create "$TAG" --target "$GITHUB_SHA" --title "Magick.Native Q8-x64 DropWheel build (no patented codecs)" --notes-file ../README.md *.zip *-source.tar.gz || \
-            gh release upload "$TAG" *.zip *-source.tar.gz --clobber
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "Magick.Native 15.0.0 Q8-x64 for DropWheel, build ${GITHUB_RUN_NUMBER} (no patented codecs)" --notes-file ../README.md *.zip *-source.tar.gz SHA256SUMS.txt

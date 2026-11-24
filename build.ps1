@@ -76,59 +76,84 @@ $kept = foreach ($line in $lines) {
 Set-Content $config $kept
 Write-Host "libheif's configuration:"; Get-Content $config | Write-Host
 
+# The value under a [SECTION] of a Config.txt, or '' when the section isn't there.
+function Section([string[]]$lines, [string]$name) {
+    $at = [array]::IndexOf($lines, "[$name]")
+    if ($at -lt 0 -or $at + 1 -ge $lines.Count) { return '' }
+    $value = $lines[$at + 1].Trim()
+    if ($value -match '^\[.+\]$') { return '' }
+    $value
+}
+function Archive([string]$repo, [string]$prefix, [string]$file) {
+    & git -C $repo archive --format=tar.gz --prefix=$prefix -o $file HEAD
+    if ($LASTEXITCODE -ne 0) { throw "git archive of $repo failed ($LASTEXITCODE)" }
+}
+
+# Before the hour-long build: each library's licence file, as its Config.txt names it, and the exact sources
+# of the LGPL libraries. A library without its licence file, or under the GPL (which DropWheel can't ship),
+# stops the build here.
+$package = Join-Path $out 'magick-native-15.0.0-dropwheel-win64'
+$sources = Join-Path $out 'sources'
+New-Item -ItemType Directory -Force (Join-Path $package 'licenses'), $sources | Out-Null
+$summary = @()
+foreach ($dir in Get-ChildItem (Join-Path $deps 'Dependencies') -Directory) {
+    $cfg = Join-Path $dir.FullName '.ImageMagick\Config.txt'
+    if (-not (Test-Path $cfg)) { continue }
+    $c = @(Get-Content $cfg)
+    # jpeg-turbo-12 and -16 build jpeg-turbo's own source again at other sample sizes: theirs is its licence.
+    $builds = Section $c 'DIRECTORY'
+    if ($builds) { $summary += "$($dir.Name) builds $builds"; continue }
+    $licenceFile = Section $c 'LICENSE_FILE'
+    $identifier = Section $c 'LICENSE_IDENTIFIER'
+    $version = Section $c 'VERSION'
+    if (-not $licenceFile) { throw "$($dir.Name) names no licence file" }
+    if (-not $identifier) { throw "$($dir.Name) names no licence" }
+    if ($identifier -match '(^|[^L])GPL') { throw "$($dir.Name) is under $identifier, which DropWheel can't ship" }
+    $commit = (& git -C $dir.FullName rev-parse HEAD)
+    $summary += "$($dir.Name) $(if ($version) { $version } else { '?' }) $identifier $commit"
+    $target = Join-Path $package "licenses\$($dir.Name)"
+    New-Item -ItemType Directory -Force $target | Out-Null
+    foreach ($file in ($licenceFile -split ',')) {
+        $from = Join-Path $dir.FullName $file.Trim()
+        if (-not (Test-Path $from)) { throw "$($dir.Name)'s licence file $($file.Trim()) isn't there" }
+        Copy-Item $from $target -Recurse
+    }
+    # The LGPL and the MPL (cairo) both ask for the source of what is shipped.
+    if ($identifier -match 'LGPL|MPL') { Archive $dir.FullName "$($dir.Name)/" (Join-Path $sources "$($dir.Name)-source.tar.gz") }
+}
+$summary | Set-Content (Join-Path $package 'libraries.txt')
+Write-Host 'Libraries:'; $summary | Write-Host
+Copy-Item (Join-Path $im 'ImageMagick\LICENSE') (Join-Path $package 'licenses\ImageMagick.txt')
+Copy-Item (Join-Path $native 'License.txt') (Join-Path $package 'licenses\Magick.Native.txt')
+Archive (Join-Path $im 'ImageMagick') 'ImageMagick/' (Join-Path $sources 'ImageMagick-source.tar.gz')
+Archive $native 'Magick.Native/' (Join-Path $sources 'Magick.Native-source.tar.gz')
+
 # The build, as Magick.Native's own workflow runs it.
 Run cmd.exe @('/c', 'build.cmd', 'Release', 'Q8', 'x64', 'noHdri', 'noOpenMP') (Join-Path $native 'build\windows')
 $dll = Get-ChildItem $native -Recurse -Filter 'Magick.Native-Q8-x64.dll' | Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
 if (-not $dll) { throw 'Magick.Native-Q8-x64.dll was not built' }
 
-# Nothing of the two left in it.
-$text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll.FullName))
-foreach ($mark in @('libde265', 'de265_', 'openh264', 'WelsCreateDecoder', 'WelsCreateSVCEncoder')) {
-    if ($text.Contains($mark)) { throw "The DLL still holds $mark" }
+# No HEVC or H.264 codec in it (the names and API symbols DropWheel's build.ps1 also looks for), and no FFTW,
+# an optional dependency under the GPL that must never be linked in.
+$text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($dll.FullName))
+foreach ($mark in @('libde265', 'de265_', 'openh264', 'WelsCreate', 'x265_', 'kvazaar', 'kvz_', 'fftw')) {
+    if ($text.IndexOf($mark, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "The DLL still holds $mark" }
 }
-
-$package = Join-Path $out 'magick-native-15.0.0-dropwheel-win64'
-New-Item -ItemType Directory -Force (Join-Path $package 'licenses') | Out-Null
 Copy-Item $dll.FullName $package
-
-# Each library's licence file, as its Config.txt names it, and the LGPL libraries' sources.
-$sources = Join-Path $out 'sources'
-New-Item -ItemType Directory -Force $sources | Out-Null
-$summary = @()
-foreach ($dir in Get-ChildItem (Join-Path $deps 'Dependencies') -Directory) {
-    $cfg = Join-Path $dir.FullName '.ImageMagick\Config.txt'
-    if (-not (Test-Path $cfg)) { continue }
-    $c = Get-Content $cfg
-    $licenceFile = ($c[([array]::IndexOf($c, '[LICENSE_FILE]') + 1)]).Trim()
-    $identifier = if ($c -contains '[LICENSE_IDENTIFIER]') { ($c[([array]::IndexOf($c, '[LICENSE_IDENTIFIER]') + 1)]).Trim() } else { '?' }
-    $version = if ($c -contains '[VERSION]') { ($c[([array]::IndexOf($c, '[VERSION]') + 1)]).Trim() } else { '?' }
-    $commit = (& git -C $dir.FullName rev-parse HEAD)
-    $summary += "$($dir.Name) $version $identifier $commit"
-    $target = Join-Path $package "licenses\$($dir.Name)"
-    New-Item -ItemType Directory -Force $target | Out-Null
-    foreach ($file in ($licenceFile -split ',')) {
-        $from = Join-Path $dir.FullName $file.Trim()
-        if (Test-Path $from) { Copy-Item $from $target -Recurse }
-    }
-    if ($identifier -match 'LGPL|GPL') {
-        & git -C $dir.FullName archive --format=tar.gz --prefix="$($dir.Name)/" -o (Join-Path $sources "$($dir.Name)-source.tar.gz") HEAD
-    }
-}
-$summary | Set-Content (Join-Path $package 'libraries.txt')
-Copy-Item (Join-Path $im 'ImageMagick\LICENSE') (Join-Path $package 'licenses\ImageMagick.txt')
-Copy-Item (Join-Path $native 'License.txt') (Join-Path $package 'licenses\Magick.Native.txt')
-& git -C (Join-Path $im 'ImageMagick') archive --format=tar.gz --prefix=ImageMagick/ -o (Join-Path $sources 'ImageMagick-source.tar.gz') HEAD
-& git -C $native archive --format=tar.gz --prefix=Magick.Native/ -o (Join-Path $sources 'Magick.Native-source.tar.gz') HEAD
 Copy-Item $config (Join-Path $package 'heif-Config.txt')
 @(
     "Magick.Native $NativeCommit (Magick.NET 15.0.0), built for DropWheel by build.ps1 in https://github.com/yahyaabohashem332/dropwheel-magick.",
     "ImageMagick $MagickCommit; its libraries from ImageMagick/Dependencies $DependenciesCommit, each at the commit in libraries.txt.",
     "Left out: libde265 (HEVC) and OpenH264 (H.264); libheif reads and writes AVIF through aom, and HEIC no more.",
-    "The sources of ImageMagick, Magick.Native and the LGPL libraries: magick-native-15.0.0-dropwheel-win64-source.tar.gz beside this build."
+    "The sources of ImageMagick, Magick.Native and the LGPL and MPL libraries: magick-native-15.0.0-dropwheel-win64-source.tar.gz beside this build."
 ) | Set-Content (Join-Path $package 'BUILD.txt')
 Copy-Item (Join-Path $package 'BUILD.txt'), (Join-Path $package 'libraries.txt') $sources
 Copy-Item (Join-Path $here 'build.ps1'), (Join-Path $here 'README.md') $sources
 
 Compress-Archive -Path $package -DestinationPath (Join-Path $out 'magick-native-15.0.0-dropwheel-win64.zip') -Force
 & tar -czf (Join-Path $out 'magick-native-15.0.0-dropwheel-win64-source.tar.gz') -C $out sources
+# Checksums of what is published, for fetch-tools.ps1 to pin.
+Get-ChildItem $out -File | Where-Object { $_.Name -like '*.zip' -or $_.Name -like '*-source.tar.gz' } | ForEach-Object {
+    "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)"
+} | Set-Content (Join-Path $out 'SHA256SUMS.txt')
 if ($env:GITHUB_OUTPUT) { "package=magick-native-15.0.0-dropwheel-win64" | Add-Content $env:GITHUB_OUTPUT }
