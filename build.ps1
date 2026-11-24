@@ -44,6 +44,14 @@ $bash = (Get-Command bash -ErrorAction Stop).Source
 Run git @('clone', '-q', $NativeRepo, 'Magick.Native') $work
 $native = Join-Path $work 'Magick.Native'
 Run git @('checkout', '-q', $NativeCommit) $native
+# Magick.Native names each library it links in Stdafx.h; the two left out are not built, so not linked either.
+$stdafx = Join-Path $native 'src\Magick.Native\Stdafx.h'
+$header = Get-Content $stdafx -Raw
+foreach ($name in $LeftOut) {
+    $header = $header -replace "(?m)^[ \t]*MAGICK_NATIVE_LINK_LIB\($([regex]::Escape($name))\)[ \t]*\r?\n", ''
+    if ($header -match "MAGICK_NATIVE_LINK_LIB\($([regex]::Escape($name))\)") { throw "Stdafx.h still links $name" }
+}
+[IO.File]::WriteAllText($stdafx, $header)
 $im = Join-Path $native 'src\ImageMagick'
 Run git @('clone', '-q', 'https://github.com/ImageMagick/ImageMagick.git', 'ImageMagick') $im
 Run git @('checkout', '-q', $MagickCommit) (Join-Path $im 'ImageMagick')
