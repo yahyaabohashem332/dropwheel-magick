@@ -71,7 +71,13 @@ $kept = foreach ($line in $lines) {
     if ($section -eq 'DEFINES' -and $line -in @('HAVE_LIBDE265', 'HAVE_OpenH264_DECODER', 'LIBDE265_STATIC_BUILD')) { continue }
     if ($section -eq 'REFERENCES' -and $line -in $LeftOut) { continue }
     $line
-    if ($line -eq '[EXCLUDES]') { 'libheif\plugins\decoder_libde265.cc'; 'libheif\plugins\decoder_openh264.cc'; 'libheif\plugins\encoder_openh264.cc' }
+    # Their plugins, those this libheif has: ImageMagick's Configure refuses an excluded path that isn't there
+    # (libheif 1.23.6 has no OpenH264 encoder).
+    if ($line -eq '[EXCLUDES]') {
+        foreach ($plugin in @('decoder_libde265.cc', 'decoder_openh264.cc', 'encoder_openh264.cc')) {
+            if (Test-Path (Join-Path $deps "Dependencies\heif\libheif\plugins\$plugin")) { "libheif\plugins\$plugin" }
+        }
+    }
 }
 Set-Content $config $kept
 Write-Host "libheif's configuration:"; Get-Content $config | Write-Host
